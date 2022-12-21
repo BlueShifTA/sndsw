@@ -71,61 +71,104 @@ class Scifi_CTR(ROOT.FairTask):
        self.C = 299792458 * u.m/u.s
 
    def ExecuteEvent(self,event):
+
+       # Set monitoring 
        h = self.M.h
        tag =  self.tag
+
+       # Mapping between detector HitID and key
        DetID2Key={}
        for nHit in range(event.Digi_ScifiHits.GetEntries()):
+           # index by nHit 
            DetID2Key[event.Digi_ScifiHits[nHit].GetDetectorID()] = nHit
 
+
+       # Loop over tracks 
        for aTrack in event.Reco_MuonTracks:
+          
+          # Skip non-Unique ID 
           if not aTrack.GetUniqueID()==1: continue
+
+          # Skip non-coverage track 
           fitStatus = aTrack.getFitStatus()
           if not fitStatus.isFitConverged(): continue
+          
+          # Get Fit state, momentum and positions
           state = aTrack.getFittedState()
           mom = state.getMom()
           slopeX = mom.X()/mom.Z()
           slopeY = mom.Y()/mom.Z()
+
+
+          # Payload for clusters 
           sortedClusters={}
-#
-          pos = {}
           for s in range(1,6):  sortedClusters[s] = {'H':[],'V':[]}
+
+          # Loop over all clusters on Tracks 
+          ## Add to sortedClusters payload 
           for nM in range(aTrack.getNumPointsWithMeasurement()):
-              state = aTrack.getFittedState(nM)
-              Meas = aTrack.getPointWithMeasurement(nM)
-              W      = Meas.getRawMeasurement()
-              clkey = W.getHitId()
-              aCl    = event.Cluster_Scifi[clkey]
-              aHit = event.Digi_ScifiHits[DetID2Key[aCl.GetFirst()]]
-              s = aCl.GetFirst()//1000000
+
+              # Get fitted state  
+              state = aTrack.getFittedState(nM) # state 
+              Meas = aTrack.getPointWithMeasurement(nM) # 
+
+              # Check only the fastest HIT in the cluster 
+              W     = Meas.getRawMeasurement()
+              clkey = W.getHitId()  # HitID 
+              aCl   = event.Cluster_Scifi[clkey] # Cluster 
+              aHit = event.Digi_ScifiHits[DetID2Key[aCl.GetFirst()]] # First fastest hit in a cluster
+              s = aCl.GetFirst()//1000000  # Station 
               aCl.GetPosition(A,B)
-              mat = (aCl.GetFirst()//10000)%10
+              mat = (aCl.GetFirst()//10000)%10 # Mat 
+
+              # Check vertical and horizontal 
+              ## sortedClusters[STATION][ORIENTATION][INDEX_SORTED_CLUSTERS]
+              ###                 payload: [FASTEST_HITID, LENGTH_POS, RIGHT_POS_CLUS, Y_POSITION, MAT_NUMBER, Z_POSITION]
               if aHit.isVertical(): 
+                        # Vertical 
                         L = B[1]-state.getPos()[1]
                         sortedClusters[s]['V'].append( [clkey,L,B[0],state.getPos()[1],mat,(A[2]+B[2])/2.] )
                         rc = h['res'+str(s)+'V'].Fill( (A[0]+B[0])/2.-state.getPos()[0])
               else:  
+                        # Horizontal 
                         L = A[0]-state.getPos()[0]
                         sortedClusters[s]['H'].append( [clkey,L,A[1],state.getPos()[0],mat,(A[2]+B[2])/2.] )
                         rc = h['res'+str(s)+'H'].Fill( (A[1]+B[1])/2.-state.getPos()[1])
-          # find station with exactly 1 x and 1 y cluster:
+
+          # Loop over station 
           for s in range(1,6):
+
+              # Find station with exactly 1x and 1y clusters:
               if not (len(sortedClusters[s]['V']) * len(sortedClusters[s]['H']) ) ==1: continue
+
+              # Corrected time between 2 axes  
+              # FIRST PLANE time correction
               timeCorr = {}
               for proj in ['V','H']:
-                  clkey = sortedClusters[s][proj][0][0]
-                  aCl    = event.Cluster_Scifi[clkey]
-                  L = sortedClusters[s][proj][0][1]
-                  rc = h['extrap'+str(s)+proj].Fill(abs(L))
+                  clkey = sortedClusters[s][proj][0][0] # HitID of the fastest cluster [First plane - front track]
+                  aCl   = event.Cluster_Scifi[clkey] # Get cluster time - fastest hit
+                  L = sortedClusters[s][proj][0][1] # Get L - distance of a real hit - taking into account the propagation  
+                  rc = h['extrap'+str(s)+proj].Fill(abs(L)) # extrapolation 
                   time = aCl.GetTime()   # Get time in ns, use fastest TDC of cluster
-                  mat = sortedClusters[s][proj][0][4]
-                  time-=  self.tdcScifiStationCalib[s][1][proj][mat]
-                  time-=  self.tdcScifiStationCalib[s][0]
-                  timeCorr[proj] = time - abs(L)/self.V
-                  # print(s,proj,time,L,L/self.V)
+                  mat = sortedClusters[s][proj][0][4] # Mat number 
+                  time-=  self.tdcScifiStationCalib[s][1][proj][mat] # alignment correct as function of station / projection / mat
+                  time-=  self.tdcScifiStationCalib[s][0] # Internal calibration 
+
+                  # Get time for each orientation  
+                  timeCorr[proj] = time - abs(L)/self.V 
+
+
+              # Difference between orientations 
               dt = timeCorr['H']  - timeCorr['V']
+
+              # Sonething I don't know 
               rc = h['CTR_Scifi'+str(s)+tag].Fill(dt)
+
+              # Get first MAT NUMBER 
               matH,matV = sortedClusters[s]['H'][0][4],sortedClusters[s]['V'][0][4]
               rc = h['CTR_Scifi'+str(100*s+10*matH+matV)+tag].Fill(dt)
+
+              # 
               if abs(slopeX)<0.1 and abs(slopeY)<0.1:  
                     rc = h['CTR_Scifi_beam'+str(s)+tag].Fill(dt)
                     rc = h['CTR_Scifi_beam'+str(100*s+10*matH+matV)+tag].Fill(dt)
